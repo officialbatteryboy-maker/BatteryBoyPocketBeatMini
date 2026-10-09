@@ -466,10 +466,18 @@ void setup() {
   Serial.begin(115200);
   delay(250);
   Serial.println("[BOOT] PocketBeat CYD starting");
+
+  // On the common ESP32-2432S028 CYD, GPIO 21 controls the TFT backlight.
+  // Turn it on before TFT_eSPI initialization so a driver/config issue is visible.
+  pinMode(21, OUTPUT);
+  digitalWrite(21, HIGH);
+  delay(50);
+  Serial.println("[BOOT] TFT backlight GPIO21 enabled");
   Serial.println("[BOOT] Initializing ILI9341 display");
   tft.init();
   tft.setRotation(1); // landscape 320x240
   tft.setTextWrap(false);
+  Serial.println("[BOOT] TFT initialized and rotation set");
   tft.fillScreen(C_BG);
   tft.setTextColor(C_WHITE, C_BG);
   tft.drawCentreString("POCKETBEAT MINI", 160, 90, 4);
