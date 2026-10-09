@@ -25,7 +25,8 @@ static constexpr size_t PCM_STREAM_BYTES = 16 * 1024;
 
 TFT_eSPI tft;
 XPT2046_Touchscreen touch(TOUCH_CS_PIN, TOUCH_IRQ_PIN);
-SPIClass sdSPI(VSPI);
+// Use HSPI for the microSD card. VSPI is also used by TFT_eSPI/touch on this board.
+SPIClass sdSPI(HSPI);
 BluetoothA2DPSource a2dpSource;
 AudioGeneratorMP3 *mp3 = nullptr;
 AudioFileSourceSD *audioFile = nullptr;
@@ -159,14 +160,19 @@ void scanCardOnce() {
   songs.clear();
   sdReady = false;
   // Use a separate SPI bus for SD so SD reads cannot seize the TFT/touch bus.
+  Serial.println("[BOOT] Starting SD bus on HSPI");
   sdSPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
-  if (!SD.begin(SD_CS_PIN, sdSPI, 16000000)) {
+  Serial.println("[BOOT] Mounting microSD");
+  if (!SD.begin(SD_CS_PIN, sdSPI, 8000000)) {
+    Serial.println("[SD] Mount failed; keeping UI active");
     statusText = "SD NOT READY - UI STILL ACTIVE";
     return;
   }
   sdReady = true;
+  Serial.println("[SD] Mounted; scanning /MUSIC and root");
   scanDirectory("/MUSIC");
   scanDirectory("/");
+  Serial.printf("[SD] Scan complete; %u MP3 track(s) indexed\n", (unsigned)songs.size());
   if (songs.empty()) statusText = "SD OK - NO MP3 FILES FOUND";
   else statusText = String("SD READY - ") + songs.size() + " TRACKS";
 }
@@ -458,7 +464,9 @@ void handleTouch(int x, int y, int rawX, int rawY) {
 
 void setup() {
   Serial.begin(115200);
-  delay(80);
+  delay(250);
+  Serial.println("[BOOT] PocketBeat CYD starting");
+  Serial.println("[BOOT] Initializing ILI9341 display");
   tft.init();
   tft.setRotation(1); // landscape 320x240
   tft.setTextWrap(false);
@@ -467,15 +475,19 @@ void setup() {
   tft.drawCentreString("POCKETBEAT MINI", 160, 90, 4);
   tft.setTextColor(C_MINT, C_BG);
   tft.drawCentreString("STARTING...", 160, 128, 2);
+  Serial.println("[BOOT] Display initialized; splash drawn");
 
   SPI.begin(14, 12, 13, TOUCH_CS_PIN);
   touch.begin();
   touch.setRotation(1);
+  Serial.println("[BOOT] Touch initialized");
   randomSeed(esp_random());
 
   // Deliberately no infinite retry or calibration loop here.
   scanCardOnce();
+  Serial.println("[BOOT] Rendering home UI");
   render();
+  Serial.println("[BOOT] Setup complete");
 }
 
 void loop() {
