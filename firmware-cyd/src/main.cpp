@@ -29,20 +29,20 @@ SPIClass sdSPI(VSPI);
 BluetoothA2DPSource a2dpSource;
 AudioGeneratorMP3 *mp3 = nullptr;
 AudioFileSourceSD *audioFile = nullptr;
+StreamBufferHandle_t pcmStream = nullptr;
 class AudioOutputBluetooth : public AudioOutput {
 public:
   bool begin() override { return true; }
   bool stop() override { return true; }
-  bool flush() override { return true; }
+  void flush() override {}
   bool ConsumeSample(int16_t sample[2]) override {
     if (!pcmStream) return false;
     // Drop samples rather than blocking the MP3 decoder if Bluetooth falls behind.
-    return xStreamBufferSend(pcmStream, sample, sizeof(int16_t) * 2, 0) > 0;
+    return xStreamBufferSend(pcmStream, sample, sizeof(int16_t) * 2, 0) == sizeof(int16_t) * 2;
   }
 };
 AudioOutputBluetooth *audioOut = nullptr;
-StreamBufferHandle_t pcmStream = nullptr;
-bool btStarted = false;
+bool bluetoothSourceStarted = false;
 bool btConnected = false;
 
 enum Screen : uint8_t { HOME, LIBRARY, COLLECTION, SETTINGS };
@@ -335,7 +335,10 @@ void render() {
 int32_t bluetoothPcmCallback(uint8_t *data, int32_t byteCount) {
   if (!data || byteCount <= 0) return 0;
   memset(data, 0, byteCount);
-  if (pcmStream) xStreamBufferReceive(pcmStream, data, byteCount, 0);
+  if (pcmStream) {
+    // Return silence for any bytes not yet supplied by the MP3 decoder.
+    xStreamBufferReceive(pcmStream, data, byteCount, 0);
+  }
   return byteCount;
 }
 
@@ -349,7 +352,7 @@ void stopPlayback() {
 }
 
 void startBluetooth() {
-  if (btStarted) return;
+  if (bluetoothSourceStarted) return;
   if (String(BT_SPEAKER_NAME) == "YOUR SPEAKER NAME") {
     btStatus = "EDIT BT_SPEAKER_NAME FIRST";
     statusText = btStatus;
@@ -359,8 +362,8 @@ void startBluetooth() {
   if (!pcmStream) pcmStream = xStreamBufferCreate(PCM_STREAM_BYTES, 4);
   if (!pcmStream) { btStatus = "PCM BUFFER FAILED"; statusText = btStatus; needsDraw = true; return; }
   // The A2DP source discovers/connects to the named speaker; first connection may take several seconds.
-  a2dpSource.start(BT_SPEAKER_NAME, bluetoothPcmCallback);
-  btStarted = true;
+  a2dpSource.start_raw(BT_SPEAKER_NAME, bluetoothPcmCallback);
+  bluetoothSourceStarted = true;
   btStatus = String("CONNECTING TO ") + BT_SPEAKER_NAME;
   statusText = btStatus;
   needsDraw = true;
@@ -476,7 +479,7 @@ void setup() {
 }
 
 void loop() {
-  if (btStarted) btConnected = a2dpSource.is_connected();
+  if (bluetoothSourceStarted) btConnected = a2dpSource.is_connected();
   if (mp3 && uiPlaying) {
     if (mp3->isRunning()) {
       if (!mp3->loop()) {
