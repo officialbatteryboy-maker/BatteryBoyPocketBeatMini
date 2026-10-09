@@ -1,0 +1,10 @@
+{
+  "description": "A retro-styled MP3 player with Bluetooth support and a unique Pokémon-inspired game that lets users battle using their favorite songs as characters.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
