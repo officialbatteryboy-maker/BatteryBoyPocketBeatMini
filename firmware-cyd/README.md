@@ -18,7 +18,7 @@ The uploaded React app is a **browser prototype** and cannot be flashed directly
 For the common ESP32-2432S028R-style CYD:
 - TFT: ILI9341, MOSI 13, MISO 12, SCLK 14, CS 15, DC 2, reset tied to board reset.
 - Touch: XPT2046 CS 33, IRQ 36; shared display SPI bus.
-- microSD: separate VSPI bus, SCK 18, MISO 19, MOSI 23, CS 5.
+- microSD: separate HSPI bus, SCK 18, MISO 19, MOSI 23, CS 5. The SD bus must remain separate from the TFT/touch VSPI bus.
 
 CYD variants exist. If your board has different wiring/controller, adjust `platformio.ini` and the SD/touch pin constants in `src/main.cpp`.
 
