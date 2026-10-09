@@ -3,6 +3,12 @@
 #include <SD.h>
 #include <TFT_eSPI.h>
 #include <XPT2046_Touchscreen.h>
+#include <BluetoothA2DPSource.h>
+#include <AudioGeneratorMP3.h>
+#include <AudioFileSourceSD.h>
+#include <AudioOutput.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/stream_buffer.h>
 #include <vector>
 
 // Common ESP32-2432S028 CYD pin map. Adjust for other revisions.
@@ -13,10 +19,31 @@ static constexpr int SD_SCK_PIN = 18;
 static constexpr int SD_MISO_PIN = 19;
 static constexpr int SD_MOSI_PIN = 23;
 static constexpr size_t MAX_TRACKS = 100;
+// Set this to the exact advertised name of your Bluetooth speaker before pairing.
+static const char *BT_SPEAKER_NAME = "YOUR SPEAKER NAME";
+static constexpr size_t PCM_STREAM_BYTES = 16 * 1024;
 
 TFT_eSPI tft;
 XPT2046_Touchscreen touch(TOUCH_CS_PIN, TOUCH_IRQ_PIN);
 SPIClass sdSPI(VSPI);
+BluetoothA2DPSource a2dpSource;
+AudioGeneratorMP3 *mp3 = nullptr;
+AudioFileSourceSD *audioFile = nullptr;
+class AudioOutputBluetooth : public AudioOutput {
+public:
+  bool begin() override { return true; }
+  bool stop() override { return true; }
+  bool flush() override { return true; }
+  bool ConsumeSample(int16_t sample[2]) override {
+    if (!pcmStream) return false;
+    // Drop samples rather than blocking the MP3 decoder if Bluetooth falls behind.
+    return xStreamBufferSend(pcmStream, sample, sizeof(int16_t) * 2, 0) > 0;
+  }
+};
+AudioOutputBluetooth *audioOut = nullptr;
+StreamBufferHandle_t pcmStream = nullptr;
+bool btStarted = false;
+bool btConnected = false;
 
 enum Screen : uint8_t { HOME, LIBRARY, COLLECTION, SETTINGS };
 Screen screenNow = HOME;
@@ -33,8 +60,9 @@ std::vector<Song> songs;
 int currentSong = -1;
 int listOffset = 0;
 bool sdReady = false;
-bool uiPlaying = false; // UI state only; audio output is not implemented in this port.
+bool uiPlaying = false;
 String statusText = "BOOTING POCKETBEAT...";
+String btStatus = "BT OFF";
 uint32_t lastTouchMs = 0;
 uint32_t lastDrawMs = 0;
 bool needsDraw = true;
@@ -149,7 +177,7 @@ void drawTopBar() {
   tft.setTextColor(C_MINT, C_DARK);
   tft.drawString("POCKETBEAT", 8, 7, 2);
   tft.setTextColor(C_MUTED, C_DARK);
-  tft.drawRightString(sdReady ? "SD OK" : "NO SD", 311, 8, 1);
+  tft.drawRightString(String(sdReady ? "SD OK" : "NO SD") + " / " + (btConnected ? "BT OK" : "BT"), 311, 8, 1);
 }
 
 void drawNav() {
@@ -277,15 +305,17 @@ void drawSettings() {
   tft.setTextColor(C_WHITE, C_BG);
   tft.drawString("DEVICE SETTINGS", 10, 33, 2);
   tft.setTextColor(C_MINT, C_BG);
-  tft.drawString("TOUCH DIAGNOSTICS", 10, 64, 1);
+  tft.drawString("BLUETOOTH AUDIO", 10, 58, 1);
+  drawButton(10, 72, 142, 30, btConnected ? "BT CONNECTED" : "CONNECT SPEAKER", C_PURPLE);
+  drawButton(164, 72, 142, 30, "STOP AUDIO", C_PINK, C_BG);
   tft.setTextColor(C_MUTED, C_BG);
-  tft.drawString("Tap anywhere above nav to test input.", 10, 82, 1);
-  tft.drawString("No boot-time calibration loop is used.", 10, 98, 1);
-  tft.drawString("SD scans once at boot; UI stays responsive.", 10, 114, 1);
+  tft.drawString(btStatus.substring(0, 36), 10, 109, 1);
+  tft.drawString("Set BT_SPEAKER_NAME in src/main.cpp", 10, 124, 1);
+  tft.drawString("TOUCH DIAGNOSTICS", 10, 145, 1);
+  tft.setTextColor(C_MUTED, C_BG);
+  tft.drawString("No boot-time calibration loop is used.", 10, 160, 1);
   tft.setTextColor(C_YELLOW, C_BG);
-  tft.drawString(sdReady ? "SD: MOUNTED" : "SD: NOT MOUNTED", 10, 143, 2);
-  tft.setTextColor(C_MUTED, C_BG);
-  tft.drawString("Raw touch X/Y appear in status after tap.", 10, 174, 1);
+  tft.drawString(sdReady ? "SD: MOUNTED" : "SD: NOT MOUNTED", 10, 177, 1);
 }
 
 void render() {
@@ -302,6 +332,65 @@ void render() {
   lastDrawMs = millis();
 }
 
+int32_t bluetoothPcmCallback(uint8_t *data, int32_t byteCount) {
+  if (!data || byteCount <= 0) return 0;
+  memset(data, 0, byteCount);
+  if (pcmStream) xStreamBufferReceive(pcmStream, data, byteCount, 0);
+  return byteCount;
+}
+
+void stopPlayback() {
+  if (mp3) { mp3->stop(); delete mp3; mp3 = nullptr; }
+  if (audioFile) { audioFile->close(); delete audioFile; audioFile = nullptr; }
+  uiPlaying = false;
+  if (pcmStream) xStreamBufferReset(pcmStream);
+  statusText = "PLAYBACK STOPPED";
+  needsDraw = true;
+}
+
+void startBluetooth() {
+  if (btStarted) return;
+  if (String(BT_SPEAKER_NAME) == "YOUR SPEAKER NAME") {
+    btStatus = "EDIT BT_SPEAKER_NAME FIRST";
+    statusText = btStatus;
+    needsDraw = true;
+    return;
+  }
+  if (!pcmStream) pcmStream = xStreamBufferCreate(PCM_STREAM_BYTES, 4);
+  if (!pcmStream) { btStatus = "PCM BUFFER FAILED"; statusText = btStatus; needsDraw = true; return; }
+  // The A2DP source discovers/connects to the named speaker; first connection may take several seconds.
+  a2dpSource.start(BT_SPEAKER_NAME, bluetoothPcmCallback);
+  btStarted = true;
+  btStatus = String("CONNECTING TO ") + BT_SPEAKER_NAME;
+  statusText = btStatus;
+  needsDraw = true;
+}
+
+void startPlayback() {
+  if (currentSong < 0 || currentSong >= (int)songs.size()) {
+    if (songs.empty()) { statusText = "NO TRACKS - CHECK SD"; needsDraw = true; return; }
+    currentSong = 0;
+  }
+  startBluetooth();
+  if (!pcmStream) return;
+  if (mp3) { mp3->stop(); delete mp3; mp3 = nullptr; }
+  if (audioFile) { audioFile->close(); delete audioFile; audioFile = nullptr; }
+  if (audioOut) { delete audioOut; audioOut = nullptr; }
+  xStreamBufferReset(pcmStream);
+  audioFile = new AudioFileSourceSD(songs[currentSong].path.c_str());
+  audioOut = new AudioOutputBluetooth();
+  mp3 = new AudioGeneratorMP3();
+  if (!audioFile || !audioOut || !mp3 || !mp3->begin(audioFile, audioOut)) {
+    stopPlayback();
+    statusText = "MP3 START FAILED - CHECK FILE";
+    needsDraw = true;
+    return;
+  }
+  uiPlaying = true;
+  statusText = String("PLAYING: ") + songs[currentSong].title;
+  needsDraw = true;
+}
+
 void selectSong(int index, bool surprise = false) {
   if (songs.empty()) {
     statusText = "NO TRACKS - CHECK SD CARD";
@@ -310,9 +399,9 @@ void selectSong(int index, bool surprise = false) {
   }
   if (index < 0) index = (int)songs.size() - 1;
   if (index >= (int)songs.size()) index = 0;
+  if (uiPlaying) stopPlayback();
   currentSong = index;
-  uiPlaying = false;
-  statusText = surprise ? "SURPRISE SPIN SELECTED A TRACK" : "TRACK SELECTED - AUDIO NOT ENABLED";
+  statusText = surprise ? "SURPRISE SPIN - READY TO PLAY" : "TRACK SELECTED";
   screenNow = HOME;
   needsDraw = true;
 }
@@ -332,9 +421,7 @@ void handleTouch(int x, int y, int rawX, int rawY) {
     if (y >= 130 && y <= 168) {
       if (x < 102) selectSong(currentSong - 1);
       else if (x < 199) {
-        uiPlaying = !uiPlaying;
-        statusText = uiPlaying ? "PLAY REQUEST - AUDIO NOT ENABLED" : "PAUSED - AUDIO NOT ENABLED";
-        needsDraw = true;
+        if (uiPlaying) stopPlayback(); else startPlayback();
       } else if (x < 246) selectSong(currentSong + 1);
       else {
         if (!songs.empty()) selectSong(random((int)songs.size()), true);
@@ -356,6 +443,11 @@ void handleTouch(int x, int y, int rawX, int rawY) {
     return;
   }
   if (screenNow == SETTINGS) {
+    if (y >= 68 && y <= 105) {
+      if (x < 158) startBluetooth();
+      else stopPlayback();
+      return;
+    }
     statusText = String("TOUCH RAW ") + rawX + "," + rawY;
     needsDraw = true;
   }
@@ -384,6 +476,19 @@ void setup() {
 }
 
 void loop() {
+  if (btStarted) btConnected = a2dpSource.is_connected();
+  if (mp3 && uiPlaying) {
+    if (mp3->isRunning()) {
+      if (!mp3->loop()) {
+        mp3->stop();
+        uiPlaying = false;
+        statusText = "TRACK FINISHED";
+        needsDraw = true;
+      }
+    } else {
+      uiPlaying = false;
+    }
+  }
   if (touch.touched() && millis() - lastTouchMs > 180) {
     TS_Point p = touch.getPoint();
     // Approximate defaults for common CYD. Change these if touch axes are offset.
