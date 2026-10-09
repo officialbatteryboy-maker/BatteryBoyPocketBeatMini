@@ -11,8 +11,8 @@ This folder is a **native ESP32 Arduino/PlatformIO port** of the browser UI prot
 - Home, Library, Collection/level concept screen, and Settings/touch diagnostics.
 - Surprise Spin chooses a random indexed track.
 
-## Important limitation
-The uploaded React app is a **browser prototype**: its audio progress, Bluetooth scanning/pairing, battle actions, and leveling are simulated in JavaScript. They cannot be flashed directly to an ESP32. This port establishes the native display/touch/SD firmware and build pipeline; it does **not yet implement MP3 decoding/audio output, Bluetooth A2DP speaker pairing, embedded album-art decoding, or full persistence/leveling**. The Play control is a UI placeholder and does not emit sound yet. Those features need a separate hardware implementation and validation on your exact CYD revision.
+## Audio / Bluetooth setup\n\nThis build includes MP3 decoding and an A2DP Bluetooth audio path. Before building, edit `src/main.cpp` and set `BT_SPEAKER_NAME` to the exact advertised Bluetooth name of the speaker. The Settings screen has a connect button and stop button. This implementation attempts connection by speaker name; it does not provide a general nearby-device picker, and it requires a classic Bluetooth-capable ESP32 (not ESP32-S3/C3). Test on hardware: A2DP library APIs and CYD board variants can differ.\n\n## Important limitation
+The uploaded React app is a **browser prototype** and cannot be flashed directly to an ESP32. This port implements an initial native display/touch/SD firmware, MP3 decoding through ESP8266Audio, and a Bluetooth A2DP source path. Embedded album-art decoding and full persistent leveling are not implemented yet. Bluetooth connection is configured by the speaker name in source code rather than a full visual device scanner/picker.
 
 ## Board/pin assumptions
 For the common ESP32-2432S028R-style CYD:
