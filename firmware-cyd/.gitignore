@@ -1,0 +1,12 @@
+# PlatformIO build outputs
+.pio/
+.vscode/
+*.pio
+*.elf
+*.bin
+*.hex
+*.log
+
+# Local editor files
+.DS_Store
+Thumbs.db
